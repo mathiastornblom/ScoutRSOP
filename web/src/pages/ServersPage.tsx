@@ -237,7 +237,7 @@ function ServerFormModal({ server, onClose, onSave }: {
 function LoginModal({ server, onClose, onLogin }: {
   server: ServerType; onClose: () => void; onLogin: (username: string) => void
 }) {
-  const [creds, setCreds] = useState({ username: '', password: '' })
+  const [creds, setCreds] = useState({ username: '', password: '', domain: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -247,7 +247,7 @@ function LoginModal({ server, onClose, onLogin }: {
     setLoading(true)
     setError('')
     try {
-      await api.scout.login(server.id, creds.username, creds.password)
+      await api.scout.login(server.id, creds.username, creds.password, creds.domain)
       onLogin(creds.username)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed')
@@ -277,6 +277,8 @@ function LoginModal({ server, onClose, onLogin }: {
         <form onSubmit={submit} className="space-y-3">
           <input className="input" required placeholder="Username" value={creds.username}
             onChange={e => setCreds(c => ({ ...c, username: e.target.value }))} autoFocus />
+          <input className="input" placeholder="Domain (e.g. corp.com)" value={creds.domain}
+            onChange={e => setCreds(c => ({ ...c, domain: e.target.value }))} />
           <div className="relative">
             <input className="input pr-10" required placeholder="Password" type={showPw ? 'text' : 'password'}
               value={creds.password} onChange={e => setCreds(c => ({ ...c, password: e.target.value }))} />

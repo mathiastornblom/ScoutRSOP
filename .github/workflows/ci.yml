@@ -3,10 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
 jobs:
+  # ─── Build & test on every push/PR ─────────────────────────────────────────
   test:
     name: Build & Test
     runs-on: ubuntu-latest
@@ -17,6 +19,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: true
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -40,19 +43,23 @@ jobs:
       - name: Go test
         run: go test ./...
 
+  # ─── Release: build all platforms + publish ────────────────────────────────
   release:
-    name: Release binaries
+    name: Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # full history for release notes
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: true
 
       - uses: actions/setup-node@v4
         with:
@@ -60,13 +67,63 @@ jobs:
           cache: "npm"
           cache-dependency-path: web/package-lock.json
 
-      - name: Build all platforms
-        run: |
-          cd web && npm ci && npm run build
-          make build-all
+      - name: Build frontend
+        run: cd web && npm ci && npm run build
 
-      - name: Create Release
+      - name: Build all platforms
+        run: make build-all
+        # Produces: dist/scoutrsop-{windows-amd64.exe,linux-amd64,linux-arm64,darwin-amd64,darwin-arm64}
+
+      - name: Generate documentation archive
+        run: |
+          mkdir -p dist/docs
+          cp README.md dist/docs/
+          # Copy any additional docs
+          [ -d docs/ ] && cp -r docs/* dist/docs/ || true
+          cd dist && zip -r scoutrsop-docs.zip docs/
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum scoutrsop-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
           generate_release_notes: true
+          files: |
+            dist/scoutrsop-windows-amd64.exe
+            dist/scoutrsop-linux-amd64
+            dist/scoutrsop-linux-arm64
+            dist/scoutrsop-darwin-amd64
+            dist/scoutrsop-darwin-arm64
+            dist/scoutrsop-docs.zip
+            dist/checksums.txt
+          body: |
+            ## Scout RSOP ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Windows (x64) | `scoutrsop-windows-amd64.exe` |
+            | Linux (x64) | `scoutrsop-linux-amd64` |
+            | Linux (arm64) | `scoutrsop-linux-arm64` |
+            | macOS (Intel) | `scoutrsop-darwin-amd64` |
+            | macOS (Apple Silicon) | `scoutrsop-darwin-arm64` |
+            | Documentation | `scoutrsop-docs.zip` |
+
+            Verify downloads with `checksums.txt` (SHA-256).
+
+            ### Quick Start
+            ```bash
+            # Linux/macOS
+            chmod +x scoutrsop-linux-amd64
+            ./scoutrsop-linux-amd64
+
+            # Windows: double-click or run from PowerShell
+            .\scoutrsop-windows-amd64.exe
+            ```
+
+            Open http://localhost:8080 in your browser.

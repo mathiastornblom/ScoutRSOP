@@ -118,14 +118,15 @@ export const api = {
   },
 
   scout: {
-    login: (serverId: string, username: string, password: string) =>
-      request<{ token: string }>('POST', `/scout/${serverId}/login`, { username, password }),
+    login: (serverId: string, username: string, password: string, domain = '') =>
+      request<{ token: string }>('POST', `/scout/${serverId}/login`, { username, password, domain }),
     ping: (serverId: string) => request<{ online: boolean }>('GET', `/scout/${serverId}/ping`),
     health: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/health`),
     ouStructure: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/ou/structure`),
     ouRoot: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/ou/root`),
     ouSearch: (serverId: string, q: string) => request<unknown>('GET', `/scout/${serverId}/ou/search?q=${encodeURIComponent(q)}`),
-    deviceSearch: (serverId: string, q: string) => request<unknown>('GET', `/scout/${serverId}/devices/search?q=${encodeURIComponent(q)}`),
+    deviceSearch: (serverId: string, q: string, ouId = '') =>
+      request<unknown>('GET', `/scout/${serverId}/devices/search?q=${encodeURIComponent(q)}&ouId=${encodeURIComponent(ouId)}`),
     deviceGet: (serverId: string, deviceId: string) => request<unknown>('GET', `/scout/${serverId}/devices/${deviceId}`),
     labels: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/labels`),
     rules: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/rules`),

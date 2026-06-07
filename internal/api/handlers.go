@@ -133,6 +133,7 @@ func scoutLogin(c *gin.Context) {
 	var creds struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Domain   string `json:"domain"`
 	}
 	if err := c.ShouldBindJSON(&creds); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -142,7 +143,11 @@ func scoutLogin(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := client.Login(creds.Username, creds.Password); err != nil {
+	if err := client.Login(scout.LoginRequest{
+		Username: creds.Username,
+		Password: creds.Password,
+		Domain:   creds.Domain,
+	}); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
@@ -219,7 +224,7 @@ func scoutDeviceSearch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	data, err := client.SearchDevices(c.Query("q"))
+	data, err := client.SearchDevices(c.Query("ouId"), c.Query("q"), c.Query("fields"))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
