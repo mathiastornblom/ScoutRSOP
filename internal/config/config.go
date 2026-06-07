@@ -56,7 +56,7 @@ func Init(path string) error {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		current = AppConfig{
-			GithubRepo: "mathiast/ScoutRSOP",
+			GithubRepo: "mathiastornblom/ScoutRSOP",
 			AIProviders: []AIProvider{
 				{Provider: "claude", Model: "claude-sonnet-4-6", Enabled: false},
 				{Provider: "openai", Model: "gpt-4o", Enabled: false},
