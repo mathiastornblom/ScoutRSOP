@@ -119,6 +119,24 @@ export interface OUNode {
   children?: OUNode[]
 }
 
+export interface CertInfo {
+  subject: string
+  issuer: string
+  dnsNames: string[]
+  ips: string[]
+  notBefore: string
+  notAfter: string
+  selfSigned: boolean
+  daysLeft: number
+}
+
+export interface TLSStatus {
+  enabled: boolean
+  certFile: string
+  keyFile: string
+  cert?: CertInfo
+}
+
 export interface Settings {
   githubRepo: string
   aiProviders: AIProvider[]
@@ -192,5 +210,14 @@ export const api = {
     get: () => request<Settings>('GET', '/settings'),
     updateAI: (body: { providers?: { provider: string; model: string; apiKey: string; enabled: boolean }[]; githubRepo?: string }) =>
       request<{ ok: boolean }>('PUT', '/settings/ai', body),
+  },
+
+  tls: {
+    status: () => request<TLSStatus>('GET', '/settings/tls'),
+    update: (certPem: string, keyPem: string) =>
+      request<{ ok: boolean; restartRequired: boolean; cert?: CertInfo }>('PUT', '/settings/tls', { certPem, keyPem }),
+    generate: (hosts: string[]) =>
+      request<{ ok: boolean; restartRequired: boolean; cert?: CertInfo; certPem?: string }>('POST', '/settings/tls/generate', { hosts }),
+    delete: () => request<{ ok: boolean; restartRequired: boolean }>('DELETE', '/settings/tls'),
   },
 }
