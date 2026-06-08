@@ -4,7 +4,9 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,8 +16,12 @@ import (
 	"github.com/mathiast/scoutrsop/internal/config"
 	"github.com/mathiast/scoutrsop/internal/db"
 	"github.com/mathiast/scoutrsop/internal/scout"
+	"github.com/mathiast/scoutrsop/internal/tlsutil"
 	"github.com/mathiast/scoutrsop/internal/update"
 )
+
+// DataDir is the runtime data directory set by main before calling Register.
+var DataDir string
 
 // Register mounts all API routes on the given router group.
 func Register(r *gin.RouterGroup) {
@@ -56,6 +62,12 @@ func Register(r *gin.RouterGroup) {
 	// App settings
 	r.GET("/settings", getSettings)
 	r.PUT("/settings/ai", updateAISettings)
+
+	// TLS management
+	r.GET("/settings/tls", getTLSStatus)
+	r.PUT("/settings/tls", updateTLS)
+	r.DELETE("/settings/tls", deleteTLS)
+	r.POST("/settings/tls/generate", generateTLS)
 }
 
 // session cache: serverId -> token (in-memory, not persisted)
@@ -505,4 +517,106 @@ func updateAISettings(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// --- TLS management ---
+
+// getTLSStatus returns the current TLS configuration and certificate metadata.
+func getTLSStatus(c *gin.Context) {
+	tlsCfg := config.GetTLS()
+	resp := gin.H{
+		"enabled":  tlsCfg.Enabled,
+		"certFile": tlsCfg.CertFile,
+		"keyFile":  tlsCfg.KeyFile,
+	}
+	if tlsCfg.Enabled && tlsCfg.CertFile != "" {
+		if info, err := tlsutil.InspectCertFile(tlsCfg.CertFile); err == nil {
+			resp["cert"] = info
+		}
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// updateTLS accepts PEM cert+key in the request body, validates them,
+// saves them to the data directory, and updates the config.
+// A server restart is required for the change to take effect.
+func updateTLS(c *gin.Context) {
+	var req struct {
+		CertPEM string `json:"certPem"`
+		KeyPEM  string `json:"keyPem"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.CertPEM) == "" || strings.TrimSpace(req.KeyPEM) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "certPem and keyPem are required"})
+		return
+	}
+
+	certPath := filepath.Join(DataDir, "cert.pem")
+	keyPath := filepath.Join(DataDir, "key.pem")
+
+	if err := tlsutil.SavePEMFiles(certPath, keyPath, []byte(req.CertPEM), []byte(req.KeyPEM)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := config.SetTLS(config.TLSConfig{Enabled: true, CertFile: certPath, KeyFile: keyPath}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	info, _ := tlsutil.InspectCertFile(certPath)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "restartRequired": true, "cert": info})
+}
+
+// deleteTLS removes TLS configuration and cert files, reverting to HTTP.
+func deleteTLS(c *gin.Context) {
+	if err := config.DisableTLS(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "restartRequired": true})
+}
+
+// generateTLS creates a self-signed certificate for the given hosts and saves it.
+func generateTLS(c *gin.Context) {
+	var req struct {
+		Hosts     []string `json:"hosts"`
+		ValidDays int      `json:"validDays"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.Hosts) == 0 {
+		req.Hosts = []string{"localhost", "127.0.0.1"}
+	}
+	if req.ValidDays == 0 {
+		req.ValidDays = 825
+	}
+
+	certPEM, keyPEM, err := tlsutil.GenerateSelfSigned(req.Hosts, req.ValidDays)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	certPath := filepath.Join(DataDir, "cert.pem")
+	keyPath := filepath.Join(DataDir, "key.pem")
+
+	if err := tlsutil.SavePEMFiles(certPath, keyPath, certPEM, keyPEM); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := config.SetTLS(config.TLSConfig{Enabled: true, CertFile: certPath, KeyFile: keyPath}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	info, _ := tlsutil.InspectCertFile(certPath)
+	c.JSON(http.StatusOK, gin.H{
+		"ok":              true,
+		"restartRequired": true,
+		"cert":            info,
+		"certPem":         string(certPEM),
+	})
 }

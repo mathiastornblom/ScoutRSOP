@@ -1,5 +1,6 @@
 // ScoutRSOP - RSOP analysis tool for Citrix Scout Server.
 // Serves a web UI and proxies Scout REST API calls.
+// Run with -cert and -key flags (or configure via Settings → TLS) to enable HTTPS.
 package main
 
 import (
@@ -25,8 +26,10 @@ import (
 var webFS embed.FS
 
 func main() {
-	port := flag.Int("port", 8080, "HTTP listen port")
+	port := flag.Int("port", 8080, "HTTP/HTTPS listen port")
 	dataDir := flag.String("data", defaultDataDir(), "Directory for config and database files")
+	certFlag := flag.String("cert", "", "Path to TLS certificate PEM (overrides stored config)")
+	keyFlag := flag.String("key", "", "Path to TLS private key PEM (overrides stored config)")
 	flag.Parse()
 
 	log.Printf("ScoutRSOP %s (built %s)", update.AppVersion, update.BuildDate)
@@ -41,12 +44,15 @@ func main() {
 		log.Fatalf("db init: %v", err)
 	}
 
+	// Expose data dir to API handlers (for cert file writes)
+	api.DataDir = *dataDir
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
 	// CORS for dev (Vite dev server on :5173)
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:8080"},
+		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:8080", "http://localhost:8081"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
@@ -71,14 +77,34 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Listening on http://localhost%s", addr)
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("server: %v", err)
+
+	// Resolve TLS cert/key: CLI flags take precedence, then stored config
+	certPath := *certFlag
+	keyPath := *keyFlag
+	if certPath == "" || keyPath == "" {
+		tlsCfg := config.GetTLS()
+		if tlsCfg.Enabled && tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
+			certPath = tlsCfg.CertFile
+			keyPath = tlsCfg.KeyFile
+		}
+	}
+
+	if certPath != "" && keyPath != "" {
+		log.Printf("TLS enabled — listening on https://localhost%s", addr)
+		log.Printf("  cert: %s", certPath)
+		log.Printf("  key:  %s", keyPath)
+		if err := r.RunTLS(addr, certPath, keyPath); err != nil {
+			log.Fatalf("server (TLS): %v", err)
+		}
+	} else {
+		log.Printf("Listening on http://localhost%s  (configure TLS in Settings to enable HTTPS)", addr)
+		if err := r.Run(addr); err != nil {
+			log.Fatalf("server: %v", err)
+		}
 	}
 }
 
 func defaultDataDir() string {
-	// Use OS-appropriate app data directory
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "."

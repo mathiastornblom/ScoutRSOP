@@ -1,14 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   GitCompare, Search, Play, Sparkles, BarChart3,
-  ChevronDown, CheckCircle, RefreshCw, AlertCircle, SlidersHorizontal
+  ChevronDown, ChevronRight, RefreshCw, AlertCircle, SlidersHorizontal,
+  Monitor, Folder, FolderOpen, X
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAppStore } from '../store/app'
 import DiffViewer from '../components/DiffViewer'
 import AIChat from '../components/AIChat'
-import type { RSOPResult } from '../lib/api'
+import type { RSOPResult, OUNode, ScoutDevice } from '../lib/api'
 
 type BaseType = 'base' | 'ou' | 'device'
 
@@ -24,7 +25,9 @@ export default function RSOPPage() {
   const [saveAs, setSaveAs] = useState('')
   const [showSave, setShowSave] = useState(false)
   const [showAI, setShowAI] = useState(false)
-  const [ouOptions, setOuOptions] = useState<string[]>([])
+  const [ouTree, setOuTree] = useState<OUNode[]>([])
+  const [ouOptions, setOuOptions] = useState<{ id: string; name: string }[]>([])
+  const [targetDeviceName, setTargetDeviceName] = useState('')
   const [activeTab, setActiveTab] = useState<'diff' | 'full' | 'summary'>('diff')
 
   const server = servers.find(s => s.id === activeServerId)
@@ -34,8 +37,16 @@ export default function RSOPPage() {
     if (!activeServerId || !isLoggedIn) return
     api.scout.configSections(activeServerId).then(r => setAllSections(r.sections)).catch(() => {})
     api.scout.ouStructure(activeServerId).then((data: unknown) => {
-      const paths = extractOUPaths(data)
-      setOuOptions(paths)
+      const tree = extractOUTree(data)
+      setOuTree(tree)
+      // Flatten for OU dropdown (baseType=ou)
+      function flattenOUs(nodes: OUNode[], prefix = ''): { id: string; name: string }[] {
+        return nodes.flatMap(n => {
+          const label = prefix ? `${prefix} / ${n.Name}` : n.Name
+          return [{ id: String(n.OUID), name: label }, ...flattenOUs(n.children ?? [], label)]
+        })
+      }
+      setOuOptions(flattenOUs(tree))
     }).catch(() => {})
   }, [activeServerId, isLoggedIn])
 
@@ -125,14 +136,14 @@ export default function RSOPPage() {
           {/* Baseline ref */}
           {baseType === 'ou' && (
             <div>
-              <label className="text-xs text-white/50 mb-1.5 block">OU Path</label>
+              <label className="text-xs text-white/50 mb-1.5 block">OU</label>
               <select
                 value={baseRef}
                 onChange={e => setBaseRef(e.target.value)}
                 className="input text-sm"
               >
                 <option value="">Select OU…</option>
-                {ouOptions.map(ou => <option key={ou} value={ou}>{ou}</option>)}
+                {ouOptions.map(ou => <option key={ou.id} value={ou.id}>{ou.name}</option>)}
               </select>
             </div>
           )}
@@ -140,11 +151,12 @@ export default function RSOPPage() {
           {baseType === 'device' && (
             <div>
               <label className="text-xs text-white/50 mb-1.5 block">Baseline Device</label>
-              <DeviceSearchInput
+              <DeviceTreePicker
                 serverId={activeServerId}
+                ouTree={ouTree}
                 value={baseRef}
-                onChange={setBaseRef}
-                placeholder="Search baseline device…"
+                onChange={(id) => setBaseRef(id)}
+                placeholder="Browse or filter baseline device…"
               />
             </div>
           )}
@@ -152,11 +164,12 @@ export default function RSOPPage() {
           {/* Target device */}
           <div>
             <label className="text-xs text-white/50 mb-1.5 block">Target Device *</label>
-            <DeviceSearchInput
+            <DeviceTreePicker
               serverId={activeServerId}
+              ouTree={ouTree}
               value={targetRef}
-              onChange={setTargetRef}
-              placeholder="Search device by name or ID…"
+              onChange={(id, name) => { setTargetRef(id); setTargetDeviceName(name) }}
+              placeholder="Browse or filter target device…"
             />
           </div>
 
@@ -275,7 +288,7 @@ export default function RSOPPage() {
                   <FullConfigView result={currentResult} />
                 )}
                 {activeTab === 'summary' && (
-                  <SummaryView result={currentResult} />
+                  <SummaryView result={currentResult} targetName={targetDeviceName} />
                 )}
               </div>
 
@@ -365,7 +378,7 @@ function FullConfigView({ result }: { result: RSOPResult }) {
   )
 }
 
-function SummaryView({ result }: { result: RSOPResult }) {
+function SummaryView({ result, targetName }: { result: RSOPResult; targetName: string }) {
   const s = result.summary
   const total = s.totalKeys || 1
   return (
@@ -395,7 +408,7 @@ function SummaryView({ result }: { result: RSOPResult }) {
       <div className="card p-4 space-y-2">
         <h4 className="text-xs text-white/40 font-medium uppercase tracking-wide mb-3">Request Details</h4>
         <Row label="Compare against" value={`${result.request.baseType}${result.request.baseRef ? ` / ${result.request.baseRef}` : ''}`} />
-        <Row label="Target device" value={result.request.targetRef} />
+        <Row label="Target device" value={targetName || result.request.targetRef} />
         <Row label="Sections analysed" value={`${result.sections.length}`} />
         <Row label="Total keys" value={`${s.totalKeys}`} />
       </div>
@@ -412,58 +425,226 @@ function Row({ label, value }: { label: string; value: string }) {
   )
 }
 
-function DeviceSearchInput({ serverId, value, onChange, placeholder }: {
-  serverId: string; value: string; onChange: (v: string) => void; placeholder: string
+// DeviceTreePicker — OU tree browser with contains-filter search
+function DeviceTreePicker({ serverId, ouTree, value, onChange, placeholder }: {
+  serverId: string
+  ouTree: OUNode[]
+  value: string          // selected DeviceID (string)
+  onChange: (id: string, name: string) => void
+  placeholder: string
 }) {
-  const [query, setQuery] = useState(value)
-  const [results, setResults] = useState<{ id: string; name: string }[]>([])
   const [open, setOpen] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [selectedName, setSelectedName] = useState('')
+  const [deviceCache, setDeviceCache] = useState<Record<number, ScoutDevice[]>>({})
+  const [loadingOu, setLoadingOu] = useState<number | null>(null)
+  const [expandedOus, setExpandedOus] = useState<Set<number>>(new Set())
+  const ref = useRef<HTMLDivElement>(null)
 
-  async function search(q: string) {
-    setQuery(q)
-    if (!q.trim()) { setResults([]); return }
-    setLoading(true)
+  // Close on outside click
+  useEffect(() => {
+    function handle(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [])
+
+  async function loadDevices(ouid: number) {
+    if (deviceCache[ouid]) return
+    setLoadingOu(ouid)
     try {
-      const data = await api.scout.deviceSearch(serverId, q) as { devices?: { deviceId: string; name: string }[] }
-      setResults(data.devices?.map(d => ({ id: d.deviceId, name: d.name })) ?? [])
-      setOpen(true)
-    } catch { /* noop */ } finally { setLoading(false) }
+      const devices = await api.scout.deviceList(serverId, String(ouid))
+      setDeviceCache(c => ({ ...c, [ouid]: devices }))
+    } catch { /* noop */ } finally { setLoadingOu(null) }
+  }
+
+  function toggleOU(ouid: number) {
+    setExpandedOus(prev => {
+      const next = new Set(prev)
+      if (next.has(ouid)) { next.delete(ouid); return next }
+      next.add(ouid)
+      loadDevices(ouid)
+      return next
+    })
+  }
+
+  function selectDevice(device: ScoutDevice) {
+    const id = String(device.DeviceID)
+    onChange(id, device.Name)
+    setSelectedName(device.Name)
+    setOpen(false)
+    setFilter('')
+  }
+
+  function clearSelection() {
+    onChange('', '')
+    setSelectedName('')
+  }
+
+  // Gather all loaded devices for filter search
+  const allDevices: ScoutDevice[] = filter.length >= 1
+    ? Object.values(deviceCache).flat().filter(d =>
+        d.Name.toLowerCase().includes(filter.toLowerCase())
+      )
+    : []
+
+  function renderTree(nodes: OUNode[], depth = 0): React.ReactNode {
+    return nodes.map(node => {
+      const isExpanded = expandedOus.has(node.OUID)
+      const devices = deviceCache[node.OUID] ?? []
+      const filteredDevices = filter
+        ? devices.filter(d => d.Name.toLowerCase().includes(filter.toLowerCase()))
+        : devices
+      const isLoading = loadingOu === node.OUID
+
+      return (
+        <div key={node.OUID}>
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-surface-overlay text-left transition-colors"
+            style={{ paddingLeft: `${12 + depth * 16}px` }}
+            onClick={() => toggleOU(node.OUID)}
+          >
+            {isExpanded
+              ? <FolderOpen size={13} className="text-brand-400 flex-shrink-0" />
+              : <Folder size={13} className="text-white/30 flex-shrink-0" />
+            }
+            <span className="text-sm text-white/70 flex-1 truncate">{node.Name}</span>
+            {node.DeviceCount > 0 && (
+              <span className="text-xs text-white/25 font-mono">{node.DeviceCount}</span>
+            )}
+            {isExpanded
+              ? <ChevronDown size={11} className="text-white/30 flex-shrink-0" />
+              : <ChevronRight size={11} className="text-white/20 flex-shrink-0" />
+            }
+          </button>
+
+          <AnimatePresence>
+            {isExpanded && (
+              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+                {isLoading && (
+                  <div className="flex items-center gap-2 px-4 py-2" style={{ paddingLeft: `${28 + depth * 16}px` }}>
+                    <RefreshCw size={11} className="animate-spin text-white/30" />
+                    <span className="text-xs text-white/30">Loading…</span>
+                  </div>
+                )}
+                {!isLoading && filteredDevices.length === 0 && (
+                  <div className="text-xs text-white/20 px-4 py-1" style={{ paddingLeft: `${28 + depth * 16}px` }}>
+                    No devices
+                  </div>
+                )}
+                {filteredDevices.map(d => (
+                  <button
+                    key={d.DeviceID}
+                    className={`w-full flex items-center gap-2 py-1.5 hover:bg-brand-600/10 text-left transition-colors
+                      ${String(d.DeviceID) === value ? 'bg-brand-600/15 text-brand-300' : 'text-white/60'}`}
+                    style={{ paddingLeft: `${28 + depth * 16}px`, paddingRight: '12px' }}
+                    onClick={() => selectDevice(d)}
+                  >
+                    <Monitor size={11} className="flex-shrink-0 text-white/30" />
+                    <span className="text-sm flex-1 truncate">{d.Name}</span>
+                    <span className={`text-xs font-mono ${d.Status === 'ONLINE' ? 'text-green-400/70' : 'text-white/20'}`}>
+                      {d.Status === 'ONLINE' ? '●' : '○'}
+                    </span>
+                  </button>
+                ))}
+                {node.children && node.children.length > 0 && renderTree(node.children, depth + 1)}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )
+    })
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={ref}>
+      {/* Trigger input */}
       <div className="relative">
-        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+        <Monitor size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
         <input
-          className="input pl-8 text-sm"
+          className="input pl-8 pr-8 text-sm cursor-pointer"
+          readOnly
           placeholder={placeholder}
-          value={query}
-          onChange={e => search(e.target.value)}
-          onFocus={() => results.length > 0 && setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          value={selectedName || (value ? `Device ID ${value}` : '')}
+          onClick={() => setOpen(o => !o)}
         />
-        {loading && <RefreshCw size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 animate-spin" />}
-        {value && !loading && <CheckCircle size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-green-400" />}
+        {value
+          ? <button type="button" onClick={clearSelection}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60">
+              <X size={12} />
+            </button>
+          : <ChevronDown size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none" />
+        }
       </div>
+
+      {/* Dropdown */}
       <AnimatePresence>
-        {open && results.length > 0 && (
+        {open && (
           <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            className="absolute top-full left-0 right-0 mt-1 z-50 card shadow-xl max-h-48 overflow-y-auto"
+            initial={{ opacity: 0, y: -4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.98 }}
+            className="absolute top-full left-0 right-0 mt-1 z-50 card shadow-2xl overflow-hidden"
+            style={{ maxHeight: '320px' }}
           >
-            {results.map(d => (
-              <button
-                key={d.id}
-                onMouseDown={() => { onChange(d.id); setQuery(d.name); setOpen(false) }}
-                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-overlay text-sm transition-colors text-left"
-              >
-                <span className="text-white/70 flex-1 truncate">{d.name}</span>
-                <span className="text-white/30 text-xs font-mono">{d.id}</span>
-              </button>
-            ))}
+            {/* Search filter */}
+            <div className="p-2 border-b border-surface-border">
+              <div className="relative">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/30" />
+                <input
+                  className="input pl-7 py-1.5 text-xs"
+                  placeholder="Filter devices by name…"
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                  autoFocus
+                />
+                {filter && (
+                  <button onClick={() => setFilter('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60">
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-y-auto" style={{ maxHeight: '264px' }}>
+              {/* Filter results across all loaded OUs */}
+              {filter.length >= 1 && allDevices.length > 0 && (
+                <div className="border-b border-surface-border">
+                  <div className="px-3 py-1 text-xs text-white/25 uppercase tracking-wide">Search results</div>
+                  {allDevices.map(d => (
+                    <button key={d.DeviceID}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-brand-600/10 text-left transition-colors"
+                      onClick={() => selectDevice(d)}
+                    >
+                      <Monitor size={11} className="text-white/30 flex-shrink-0" />
+                      <span className="text-sm text-white/70 flex-1 truncate">{d.Name}</span>
+                      <span className={`text-xs font-mono ${d.Status === 'ONLINE' ? 'text-green-400/70' : 'text-white/20'}`}>
+                        {d.Status === 'ONLINE' ? '● Online' : '○ Offline'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {filter.length >= 1 && allDevices.length === 0 && (
+                <div className="px-3 py-3 text-xs text-white/30 text-center">
+                  No loaded devices match "{filter}" — expand OUs below to load more
+                </div>
+              )}
+
+              {/* OU tree */}
+              {ouTree.length > 0 ? (
+                <div className="py-1">
+                  <div className="px-3 py-1 text-xs text-white/25 uppercase tracking-wide">Browse by OU</div>
+                  {renderTree(ouTree)}
+                </div>
+              ) : (
+                <div className="p-4 text-center text-xs text-white/30">
+                  <RefreshCw size={14} className="mx-auto mb-2 animate-spin" />
+                  Loading OU tree…
+                </div>
+              )}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -471,17 +652,17 @@ function DeviceSearchInput({ serverId, value, onChange, placeholder }: {
   )
 }
 
-function extractOUPaths(data: unknown, prefix = ''): string[] {
+function extractOUTree(data: unknown): OUNode[] {
   if (!data || typeof data !== 'object') return []
   const arr = Array.isArray(data) ? data : [data]
-  const paths: string[] = []
-  for (const node of arr) {
+  return arr.map((node) => {
     const n = node as Record<string, unknown>
-    const name = (n.name ?? n.ouName ?? '') as string
-    const path = prefix ? `${prefix}/${name}` : name
-    if (name) paths.push(path)
-    if (n.children) paths.push(...extractOUPaths(n.children, path))
-    if (n.subordinates) paths.push(...extractOUPaths(n.subordinates, path))
-  }
-  return paths
+    return {
+      OUID: (n.OUID ?? n.ouid ?? 0) as number,
+      Name: (n.Name ?? n.name ?? '') as string,
+      DeviceCount: (n.DeviceCount ?? n.deviceCount ?? 0) as number,
+      ParentID: (n.ParentID ?? n.parentId ?? -1) as number,
+      children: n.children ? extractOUTree(n.children) : [],
+    } as OUNode
+  }).filter(n => n.Name)
 }

@@ -30,11 +30,19 @@ type AIProvider struct {
 	Enabled  bool   `json:"enabled"`
 }
 
+// TLSConfig holds paths to the TLS certificate and private key used by the HTTPS server.
+type TLSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	CertFile string `json:"certFile"` // absolute path to PEM certificate
+	KeyFile  string `json:"keyFile"`  // absolute path to PEM private key
+}
+
 // AppConfig is the top-level config file schema.
 type AppConfig struct {
 	Servers     []Server     `json:"servers"`
 	AIProviders []AIProvider `json:"aiProviders"`
 	GithubRepo  string       `json:"githubRepo"` // owner/repo for update checks
+	TLS         TLSConfig    `json:"tls"`
 }
 
 var (
@@ -140,6 +148,29 @@ func UpdateGithubRepo(repo string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	current.GithubRepo = repo
+	return save()
+}
+
+// GetTLS returns the current TLS configuration.
+func GetTLS() TLSConfig {
+	mu.RLock()
+	defer mu.RUnlock()
+	return current.TLS
+}
+
+// SetTLS updates the TLS configuration.
+func SetTLS(cfg TLSConfig) error {
+	mu.Lock()
+	defer mu.Unlock()
+	current.TLS = cfg
+	return save()
+}
+
+// DisableTLS clears TLS configuration.
+func DisableTLS() error {
+	mu.Lock()
+	defer mu.Unlock()
+	current.TLS = TLSConfig{}
 	return save()
 }
 

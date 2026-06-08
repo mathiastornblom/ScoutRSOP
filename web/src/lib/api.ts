@@ -100,6 +100,43 @@ export interface AIProvider {
   maskedKey: string
 }
 
+export interface ScoutDevice {
+  DeviceID: number
+  Name: string
+  IP_Address: string
+  Mac_Address: string
+  GroupID: number
+  Status: string
+  Activated: string
+  LastContact: string
+}
+
+export interface OUNode {
+  OUID: number
+  Name: string
+  DeviceCount: number
+  ParentID: number
+  children?: OUNode[]
+}
+
+export interface CertInfo {
+  subject: string
+  issuer: string
+  dnsNames: string[]
+  ips: string[]
+  notBefore: string
+  notAfter: string
+  selfSigned: boolean
+  daysLeft: number
+}
+
+export interface TLSStatus {
+  enabled: boolean
+  certFile: string
+  keyFile: string
+  cert?: CertInfo
+}
+
 export interface Settings {
   githubRepo: string
   aiProviders: AIProvider[]
@@ -127,6 +164,8 @@ export const api = {
     ouSearch: (serverId: string, q: string) => request<unknown>('GET', `/scout/${serverId}/ou/search?q=${encodeURIComponent(q)}`),
     deviceSearch: (serverId: string, q: string, ouId = '') =>
       request<unknown>('GET', `/scout/${serverId}/devices/search?q=${encodeURIComponent(q)}&ouId=${encodeURIComponent(ouId)}`),
+    deviceList: (serverId: string, ouId: string) =>
+      request<ScoutDevice[]>('GET', `/scout/${serverId}/devices/search?ouId=${encodeURIComponent(ouId)}`),
     deviceGet: (serverId: string, deviceId: string) => request<unknown>('GET', `/scout/${serverId}/devices/${deviceId}`),
     labels: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/labels`),
     rules: (serverId: string) => request<unknown>('GET', `/scout/${serverId}/rules`),
@@ -171,5 +210,14 @@ export const api = {
     get: () => request<Settings>('GET', '/settings'),
     updateAI: (body: { providers?: { provider: string; model: string; apiKey: string; enabled: boolean }[]; githubRepo?: string }) =>
       request<{ ok: boolean }>('PUT', '/settings/ai', body),
+  },
+
+  tls: {
+    status: () => request<TLSStatus>('GET', '/settings/tls'),
+    update: (certPem: string, keyPem: string) =>
+      request<{ ok: boolean; restartRequired: boolean; cert?: CertInfo }>('PUT', '/settings/tls', { certPem, keyPem }),
+    generate: (hosts: string[]) =>
+      request<{ ok: boolean; restartRequired: boolean; cert?: CertInfo; certPem?: string }>('POST', '/settings/tls/generate', { hosts }),
+    delete: () => request<{ ok: boolean; restartRequired: boolean }>('DELETE', '/settings/tls'),
   },
 }
