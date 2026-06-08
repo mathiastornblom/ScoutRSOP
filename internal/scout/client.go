@@ -121,9 +121,22 @@ func (c *Client) GetDevice(deviceID string) (json.RawMessage, error) {
 	return c.getUnwrappedQuery("/api/v1/device", map[string]string{"deviceId": deviceID})
 }
 
-// GetDeviceStatus returns the status of devices in an OU.
-func (c *Client) GetDeviceStatus(ouID string) (json.RawMessage, error) {
-	return c.getUnwrappedQuery("/api/v1/device/status", map[string]string{"ouId": ouID})
+// ListDevicesInOU returns the status and IDs of all devices in an OU.
+// Uses the /api/v1/ou/device/status endpoint which accepts the OU id (OUID numeric).
+func (c *Client) ListDevicesInOU(ouID string, includeSubOus bool) (json.RawMessage, error) {
+	sub := "false"
+	if includeSubOus {
+		sub = "true"
+	}
+	return c.getUnwrappedQuery("/api/v1/ou/device/status", map[string]string{
+		"id":            ouID,
+		"includeSubOus": sub,
+	})
+}
+
+// GetDeviceStatus returns the status of a single device by name, id, mac, or clientid.
+func (c *Client) GetDeviceStatus(params map[string]string) (json.RawMessage, error) {
+	return c.getUnwrappedQuery("/api/v1/device/status", params)
 }
 
 // --- OU endpoints ---
@@ -254,7 +267,11 @@ func (c *Client) getUnwrappedQuery(path string, params map[string]string) (json.
 	}
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return raw, nil // not envelope format, return as-is
+		// Not envelope format — validate it's at least valid JSON before returning
+		if !json.Valid(raw) {
+			return nil, fmt.Errorf("scout api returned non-JSON response: %s", string(raw))
+		}
+		return raw, nil
 	}
 	if env.Code >= 400 {
 		return nil, fmt.Errorf("scout api %d: %s", env.Code, env.Message)

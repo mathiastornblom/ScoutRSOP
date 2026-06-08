@@ -122,11 +122,23 @@ func (c *Client) Run(req RSOPRequest) (*RSOPResult, error) {
 	}
 
 	// Labels and rules (global)
-	result.Labels, _ = c.GetLabels()
-	result.Rules, _ = c.GetRules()
+	if l, err := c.GetLabels(); err == nil {
+		result.Labels = l
+	} else {
+		result.Labels = json.RawMessage(`[]`)
+	}
+	if r, err := c.GetRules(); err == nil {
+		result.Rules = r
+	} else {
+		result.Rules = json.RawMessage(`[]`)
+	}
 
 	// Config origins for target device (may not be available on all Scout versions)
-	result.ConfigOrigins, _ = c.GetDeviceConfigOrigins(req.TargetRef)
+	if co, err := c.GetDeviceConfigOrigins(req.TargetRef); err == nil {
+		result.ConfigOrigins = co
+	} else {
+		result.ConfigOrigins = json.RawMessage(`{}`)
+	}
 
 	// Build summary
 	for _, s := range result.Sections {
@@ -148,27 +160,35 @@ func (c *Client) Run(req RSOPRequest) (*RSOPResult, error) {
 	return result, nil
 }
 
+func safeRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
 func (c *Client) fetchSection(req RSOPRequest, section string) (RSOPSection, error) {
-	s := RSOPSection{Section: section, Diff: []DiffEntry{}}
+	s := RSOPSection{Section: section, Diff: []DiffEntry{}, Base: json.RawMessage(`{}`), Comparison: json.RawMessage(`{}`), Device: json.RawMessage(`{}`)}
 	var err error
 
 	s.Base, err = c.GetBaseConfig(section)
 	if err != nil {
 		return s, fmt.Errorf("base/%s: %w", section, err)
 	}
+	s.Base = safeRaw(s.Base)
 
 	switch req.BaseType {
 	case "base":
 		s.Comparison = s.Base
 	case "ou":
 		if d, e := c.GetOUConfig(section, req.BaseRef); e == nil {
-			s.Comparison = d
+			s.Comparison = safeRaw(d)
 		} else {
 			s.Comparison = s.Base
 		}
 	case "device":
 		if d, e := c.GetDeviceConfig(section, req.BaseRef); e == nil {
-			s.Comparison = d
+			s.Comparison = safeRaw(d)
 		} else {
 			s.Comparison = s.Base
 		}
@@ -181,7 +201,7 @@ func (c *Client) fetchSection(req RSOPRequest, section string) (RSOPSection, err
 		// Device may not have this section configured — use comparison as both sides
 		s.Device = s.Comparison
 	} else {
-		s.Device = deviceConfig
+		s.Device = safeRaw(deviceConfig)
 	}
 
 	s.Diff = diffJSON(s.Comparison, s.Device)

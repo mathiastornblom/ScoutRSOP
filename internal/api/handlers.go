@@ -224,7 +224,32 @@ func scoutDeviceSearch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	data, err := client.SearchDevices(c.Query("ouId"), c.Query("q"), c.Query("fields"))
+	ouID := c.Query("ouId")
+	q := c.Query("q")
+
+	// If no search term, list all devices in the OU via ou/device/status
+	if q == "" && ouID != "" {
+		data, err := client.ListDevicesInOU(ouID, true)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		// Unwrap devices from status.msg.devices
+		var wrapper struct {
+			Status struct {
+				Msg struct {
+					Devices json.RawMessage `json:"devices"`
+				} `json:"msg"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(data, &wrapper); err == nil && wrapper.Status.Msg.Devices != nil {
+			c.Data(http.StatusOK, "application/json", wrapper.Status.Msg.Devices)
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+		return
+	}
+	data, err := client.SearchDevices(ouID, q, c.Query("fields"))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
