@@ -171,24 +171,37 @@ function ServerCard({ server, index, active, loggedIn, onEdit, onDelete, onSelec
   )
 }
 
+function parseUrl(url: string): { scheme: string; host: string; port: string } {
+  try {
+    const u = new URL(url)
+    return { scheme: u.protocol.replace(':', ''), host: u.hostname, port: u.port || '22160' }
+  } catch {
+    return { scheme: 'https', host: url, port: '22160' }
+  }
+}
+
 function ServerFormModal({ server, onClose, onSave }: {
   server: ServerType | null
   onClose: () => void
   onSave: (s: Partial<ServerType>) => void
 }) {
+  const parsed = server?.url ? parseUrl(server.url) : { scheme: 'https', host: '', port: '22160' }
   const [form, setForm] = useState({
     name: server?.name ?? '',
-    url: server?.url ?? 'https://',
-    ignoreTls: server?.ignoreTls ?? false,
+    host: parsed.host,
+    port: parsed.port,
+    ignoreTls: server?.ignoreTls ?? true,
     description: server?.description ?? '',
   })
   const [saving, setSaving] = useState(false)
+
+  const builtUrl = `https://${form.host}${form.port && form.port !== '443' ? `:${form.port}` : ''}`
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
     try {
-      await onSave({ ...form, id: server?.id })
+      await onSave({ name: form.name, url: builtUrl, ignoreTls: form.ignoreTls, description: form.description, id: server?.id })
     } finally {
       setSaving(false)
     }
@@ -207,12 +220,24 @@ function ServerFormModal({ server, onClose, onSave }: {
         <form onSubmit={submit} className="space-y-4">
           <div>
             <label className="text-xs text-white/50 mb-1.5 block">Name *</label>
-            <input className="input" required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Production Scout" />
+            <input className="input" required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Production Scout" autoFocus />
           </div>
           <div>
-            <label className="text-xs text-white/50 mb-1.5 block">URL *</label>
-            <input className="input font-mono text-xs" required value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="https://scout.corp.com:22160" />
+            <label className="text-xs text-white/50 mb-1.5 block">Host / IP *</label>
+            <input className="input font-mono text-sm" required value={form.host}
+              onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
+              placeholder="scout.corp.com or 192.168.1.100" />
           </div>
+          <div>
+            <label className="text-xs text-white/50 mb-1.5 block">Port</label>
+            <input className="input font-mono text-sm" value={form.port}
+              onChange={e => setForm(f => ({ ...f, port: e.target.value }))}
+              placeholder="22160" />
+            <p className="text-xs text-white/25 mt-1">Default Scout Board port is 22160</p>
+          </div>
+          {form.host && (
+            <p className="text-xs text-white/30 font-mono bg-surface-overlay rounded px-3 py-2">{builtUrl}</p>
+          )}
           <div>
             <label className="text-xs text-white/50 mb-1.5 block">Description</label>
             <input className="input" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional notes" />
@@ -242,12 +267,27 @@ function LoginModal({ server, onClose, onLogin }: {
   const [error, setError] = useState('')
   const [showPw, setShowPw] = useState(false)
 
+  // UPN detection: if username contains @, extract domain automatically
+  const isUpn = creds.username.includes('@')
+  const upnDomain = isUpn ? creds.username.split('@')[1] ?? '' : ''
+
+  function handleUsernameChange(val: string) {
+    setCreds(c => {
+      const newC = { ...c, username: val }
+      // If switching from UPN to non-UPN, clear auto-extracted domain
+      if (!val.includes('@') && isUpn) newC.domain = ''
+      return newC
+    })
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError('')
     try {
-      await api.scout.login(server.id, creds.username, creds.password, creds.domain)
+      // For UPN logins the domain is embedded in the username; pass empty domain
+      const domain = isUpn ? '' : creds.domain
+      await api.scout.login(server.id, creds.username, creds.password, domain)
       onLogin(creds.username)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed')
@@ -275,10 +315,30 @@ function LoginModal({ server, onClose, onLogin }: {
           </div>
         </div>
         <form onSubmit={submit} className="space-y-3">
-          <input className="input" required placeholder="Username" value={creds.username}
-            onChange={e => setCreds(c => ({ ...c, username: e.target.value }))} autoFocus />
-          <input className="input" placeholder="Domain (e.g. corp.com)" value={creds.domain}
-            onChange={e => setCreds(c => ({ ...c, domain: e.target.value }))} />
+          <div>
+            <input className="input" required placeholder="Username or user@domain.com" value={creds.username}
+              onChange={e => handleUsernameChange(e.target.value)} autoFocus />
+            {isUpn && (
+              <p className="text-xs text-white/30 mt-1 flex items-center gap-1">
+                <CheckCircle size={10} className="text-green-400" />
+                Domain <span className="font-mono text-white/50">{upnDomain}</span> detected from username
+              </p>
+            )}
+          </div>
+          <div className="relative">
+            <input
+              className={`input transition-opacity ${isUpn ? 'opacity-40 pointer-events-none' : ''}`}
+              placeholder={isUpn ? `Domain (auto: ${upnDomain})` : 'Domain (e.g. corp.com)'}
+              value={isUpn ? upnDomain : creds.domain}
+              disabled={isUpn}
+              onChange={e => setCreds(c => ({ ...c, domain: e.target.value }))}
+            />
+            {isUpn && (
+              <div className="absolute inset-0 flex items-center px-3 pointer-events-none">
+                <span className="text-sm text-white/30 italic">auto-detected from username</span>
+              </div>
+            )}
+          </div>
           <div className="relative">
             <input className="input pr-10" required placeholder="Password" type={showPw ? 'text' : 'password'}
               value={creds.password} onChange={e => setCreds(c => ({ ...c, password: e.target.value }))} />
