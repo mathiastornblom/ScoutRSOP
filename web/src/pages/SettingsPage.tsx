@@ -2,46 +2,62 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import {
   Settings, Sparkles, GitBranch, Eye, EyeOff, Save,
-  ExternalLink, CheckCircle, AlertCircle, RefreshCw
+  ExternalLink, CheckCircle, AlertCircle, RefreshCw, Download, Info
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAppStore } from '../store/app'
 import type { Settings as SettingsType, ReleaseInfo } from '../lib/api'
 
 const PROVIDER_LABELS: Record<string, string> = {
-  claude: 'Claude (Anthropic)',
-  openai: 'ChatGPT (OpenAI)',
-  gemini: 'Gemini (Google)',
+  claude:  'Claude (Anthropic)',
+  openai:  'ChatGPT (OpenAI)',
+  gemini:  'Gemini (Google)',
   copilot: 'Copilot (Microsoft)',
 }
 
 const PROVIDER_MODELS: Record<string, string[]> = {
-  claude:  ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5-20251001'],
+  claude:  ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5'],
   openai:  ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
-  gemini:  ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'],
+  gemini:  ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
   copilot: ['gpt-4o', 'gpt-4-turbo'],
 }
+
+// Default provider entries shown even if backend has none configured
+const DEFAULT_PROVIDERS = ['claude', 'openai', 'gemini', 'copilot'].map(provider => ({
+  provider,
+  model: PROVIDER_MODELS[provider][0],
+  apiKey: '',
+  enabled: false,
+  hasKey: false,
+  maskedKey: '',
+}))
 
 export default function SettingsPage() {
   const { setAIProviders } = useAppStore()
   const [settings, setSettings] = useState<SettingsType | null>(null)
-  const [providers, setProviders] = useState<{
-    provider: string; model: string; apiKey: string; enabled: boolean; hasKey: boolean; maskedKey: string
-  }[]>([])
-  const [githubRepo, setGithubRepo] = useState('')
+  const [providers, setProviders] = useState(DEFAULT_PROVIDERS)
+  const [githubRepo, setGithubRepo] = useState('mathiastornblom/ScoutRSOP')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [releases, setReleases] = useState<ReleaseInfo[]>([])
   const [loadingReleases, setLoadingReleases] = useState(false)
+  const [versionInfo, setVersionInfo] = useState<ReleaseInfo | null>(null)
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     api.settings.get().then(s => {
       setSettings(s)
-      setGithubRepo(s.githubRepo)
-      setProviders(s.aiProviders.map(p => ({ ...p, apiKey: '' })))
+      setGithubRepo(s.githubRepo || 'mathiastornblom/ScoutRSOP')
+      // Merge server providers over defaults (keeps all 4 always visible)
+      setProviders(DEFAULT_PROVIDERS.map(def => {
+        const server = s.aiProviders.find(p => p.provider === def.provider)
+        return server ? { ...def, ...server, apiKey: '' } : def
+      }))
       setAIProviders(s.aiProviders)
     }).catch(() => {})
+
+    // Check for updates on load
+    api.version.check().then(setVersionInfo).catch(() => {})
   }, [setAIProviders])
 
   async function save() {
@@ -161,11 +177,33 @@ export default function SettingsPage() {
         description="Configure the GitHub repository for version checks and changelogs.">
         <div className="space-y-4">
           {settings && (
-            <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-surface-overlay border border-surface-border">
+            <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${
+              versionInfo?.updateAvailable
+                ? 'bg-amber-500/10 border-amber-500/30'
+                : 'bg-surface-overlay border-surface-border'
+            }`}>
               <div className="flex-1">
-                <p className="text-sm text-white/70 font-mono">v{settings.version}</p>
-                <p className="text-xs text-white/30">Built {settings.buildDate}</p>
+                <p className="text-sm text-white/70 font-mono flex items-center gap-2">
+                  <Info size={12} className="text-white/30" />
+                  Running <span className="text-brand-400">{settings.version}</span>
+                  {versionInfo?.updateAvailable && (
+                    <span className="text-amber-400 text-xs">→ {versionInfo.tag_name} available</span>
+                  )}
+                </p>
+                <p className="text-xs text-white/30 mt-0.5">Built {settings.buildDate}</p>
               </div>
+              {versionInfo?.updateAvailable && (
+                <a
+                  href={versionInfo.html_url}
+                  target="_blank" rel="noreferrer"
+                  className="btn-primary text-xs flex items-center gap-1.5 flex-shrink-0"
+                >
+                  <Download size={11} /> Download update
+                </a>
+              )}
+              {!versionInfo?.updateAvailable && versionInfo && (
+                <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
+              )}
             </div>
           )}
           <div>
@@ -189,9 +227,14 @@ export default function SettingsPage() {
             {releases.length > 0 ? (
               <div className="space-y-2">
                 {releases.map(r => (
-                  <div key={r.tag_name} className="card p-3">
+                  <div key={r.tag_name} className={`card p-3 ${r.tag_name === settings?.version ? 'border-brand-500/30' : ''}`}>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-mono text-brand-400">{r.tag_name}</span>
+                      <span className="text-sm font-mono text-brand-400 flex items-center gap-1.5">
+                        {r.tag_name}
+                        {r.tag_name === settings?.version && (
+                          <span className="badge bg-brand-600/20 text-brand-400 border border-brand-500/20 text-xs">current</span>
+                        )}
+                      </span>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-white/30">{new Date(r.published_at).toLocaleDateString()}</span>
                         <a href={r.html_url} target="_blank" rel="noreferrer"
