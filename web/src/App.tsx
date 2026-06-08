@@ -4,6 +4,7 @@ import ServersPage from './pages/ServersPage'
 import RSOPPage from './pages/RSOPPage'
 import HistoryPage from './pages/HistoryPage'
 import SettingsPage from './pages/SettingsPage'
+import DocsPage from './pages/DocsPage'
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
           <Route path="/" element={<ServersPage />} />
           <Route path="/rsop" element={<RSOPPage />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/docs" element={<DocsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

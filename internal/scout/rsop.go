@@ -1,4 +1,13 @@
 // Package scout - RSOP engine: fetches and merges config for diff analysis.
+//
+// Scout Board config priority (low → high):
+//  1. Base configuration
+//  2. Inherited/Independent OU configuration
+//  3. Advanced device configuration
+//  4. OU-assigned labels (by sequence)
+//  5. Device-assigned labels (by sequence)
+//  6. Independent device configuration
+//  7. Rules (highest priority)
 package scout
 
 import (
@@ -9,10 +18,10 @@ import (
 
 // RSOPRequest defines what to compare.
 type RSOPRequest struct {
-	BaseType  string   // "base" | "ou" | "device"
-	BaseRef   string   // OU path or device ID (empty for base)
-	TargetRef string   // device ID to compare against
-	Sections  []string // empty = all ConfigSections
+	BaseType  string   `json:"baseType"`  // "base" | "ou" | "device"
+	BaseRef   string   `json:"baseRef"`   // OU ID or device ID (empty for base)
+	TargetRef string   `json:"targetRef"` // device ID to analyse
+	Sections  []string `json:"sections"`  // empty = all ConfigSections
 }
 
 // RSOPSection holds the raw config for one section at each level.
@@ -93,7 +102,10 @@ func (c *Client) Run(req RSOPRequest) (*RSOPResult, error) {
 	for r := range ch {
 		if r.err != nil {
 			// Non-fatal: some sections may not exist for a device/OU
-			sectionMap[r.idx] = RSOPSection{Section: sections[r.idx], Diff: []DiffEntry{}}
+			sectionMap[r.idx] = RSOPSection{
+				Section: sections[r.idx],
+				Diff:    []DiffEntry{},
+			}
 			continue
 		}
 		sectionMap[r.idx] = r.sec
@@ -105,17 +117,28 @@ func (c *Client) Run(req RSOPRequest) (*RSOPResult, error) {
 	}
 
 	// Applications
-	apps, err := c.fetchApplicationComparison(req)
-	if err == nil {
+	if apps, err := c.fetchApplicationComparison(req); err == nil {
 		result.Applications = apps
 	}
 
-	// Labels and rules (base only)
-	result.Labels, _ = c.GetLabels()
-	result.Rules, _ = c.GetRules()
+	// Labels and rules (global)
+	if l, err := c.GetLabels(); err == nil {
+		result.Labels = l
+	} else {
+		result.Labels = json.RawMessage(`[]`)
+	}
+	if r, err := c.GetRules(); err == nil {
+		result.Rules = r
+	} else {
+		result.Rules = json.RawMessage(`[]`)
+	}
 
-	// Config origins for target device
-	result.ConfigOrigins, _ = c.GetDeviceConfigOrigins(req.TargetRef)
+	// Config origins for target device (may not be available on all Scout versions)
+	if co, err := c.GetDeviceConfigOrigins(req.TargetRef); err == nil {
+		result.ConfigOrigins = co
+	} else {
+		result.ConfigOrigins = json.RawMessage(`{}`)
+	}
 
 	// Build summary
 	for _, s := range result.Sections {
@@ -137,33 +160,48 @@ func (c *Client) Run(req RSOPRequest) (*RSOPResult, error) {
 	return result, nil
 }
 
+func safeRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
 func (c *Client) fetchSection(req RSOPRequest, section string) (RSOPSection, error) {
-	s := RSOPSection{Section: section}
+	s := RSOPSection{Section: section, Diff: []DiffEntry{}, Base: json.RawMessage(`{}`), Comparison: json.RawMessage(`{}`), Device: json.RawMessage(`{}`)}
 	var err error
 
 	s.Base, err = c.GetBaseConfig(section)
 	if err != nil {
 		return s, fmt.Errorf("base/%s: %w", section, err)
 	}
+	s.Base = safeRaw(s.Base)
 
 	switch req.BaseType {
 	case "base":
 		s.Comparison = s.Base
 	case "ou":
-		s.Comparison, err = c.GetOUConfig(section, req.BaseRef)
-		if err != nil {
+		if d, e := c.GetOUConfig(section, req.BaseRef); e == nil {
+			s.Comparison = safeRaw(d)
+		} else {
 			s.Comparison = s.Base
 		}
 	case "device":
-		s.Comparison, err = c.GetDeviceConfig(section, req.BaseRef)
-		if err != nil {
+		if d, e := c.GetDeviceConfig(section, req.BaseRef); e == nil {
+			s.Comparison = safeRaw(d)
+		} else {
 			s.Comparison = s.Base
 		}
+	default:
+		s.Comparison = s.Base
 	}
 
-	s.Device, err = c.GetDeviceConfig(section, req.TargetRef)
+	deviceConfig, err := c.GetDeviceConfig(section, req.TargetRef)
 	if err != nil {
-		return s, nil
+		// Device may not have this section configured — use comparison as both sides
+		s.Device = s.Comparison
+	} else {
+		s.Device = safeRaw(deviceConfig)
 	}
 
 	s.Diff = diffJSON(s.Comparison, s.Device)
@@ -183,35 +221,40 @@ func (c *Client) fetchApplicationComparison(req RSOPRequest) (*ApplicationCompar
 	case "base":
 		ac.Comparison = ac.Base
 	case "ou":
-		ac.Comparison, _ = c.GetOUApplications(req.BaseRef)
+		if d, e := c.GetOUApplications(req.BaseRef); e == nil {
+			ac.Comparison = d
+		} else {
+			ac.Comparison = ac.Base
+		}
 	case "device":
-		ac.Comparison, _ = c.GetDeviceApplications(req.BaseRef)
+		if d, e := c.GetDeviceApplications(req.BaseRef); e == nil {
+			ac.Comparison = d
+		} else {
+			ac.Comparison = ac.Base
+		}
+	default:
+		ac.Comparison = ac.Base
 	}
 
-	ac.Device, _ = c.GetDeviceApplications(req.TargetRef)
+	if d, e := c.GetDeviceApplications(req.TargetRef); e == nil {
+		ac.Device = d
+	}
 	ac.Diff = diffJSON(ac.Comparison, ac.Device)
 	return ac, nil
 }
 
 // diffJSON compares two JSON objects and returns per-key diffs.
+// Handles both flat objects and nested objects (flattened with dot notation).
 func diffJSON(a, b json.RawMessage) []DiffEntry {
-	var ma, mb map[string]any
-	_ = json.Unmarshal(a, &ma)
-	_ = json.Unmarshal(b, &mb)
-
-	if ma == nil {
-		ma = map[string]any{}
-	}
-	if mb == nil {
-		mb = map[string]any{}
-	}
+	flatA := flattenJSON(a, "")
+	flatB := flattenJSON(b, "")
 
 	seen := map[string]bool{}
 	var diffs []DiffEntry
 
-	for k, va := range ma {
+	for k, va := range flatA {
 		seen[k] = true
-		vb, ok := mb[k]
+		vb, ok := flatB[k]
 		if !ok {
 			diffs = append(diffs, DiffEntry{Key: k, BaseValue: va, Status: "removed"})
 			continue
@@ -222,10 +265,41 @@ func diffJSON(a, b json.RawMessage) []DiffEntry {
 			diffs = append(diffs, DiffEntry{Key: k, BaseValue: va, TargetValue: vb, Status: "changed"})
 		}
 	}
-	for k, vb := range mb {
+	for k, vb := range flatB {
 		if !seen[k] {
 			diffs = append(diffs, DiffEntry{Key: k, TargetValue: vb, Status: "added"})
 		}
 	}
 	return diffs
+}
+
+// flattenJSON recursively flattens a JSON object using dot-notation keys.
+func flattenJSON(raw json.RawMessage, prefix string) map[string]any {
+	result := map[string]any{}
+	if len(raw) == 0 {
+		return result
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		// Not an object — might be an array or scalar
+		return result
+	}
+
+	for k, v := range obj {
+		key := k
+		if prefix != "" {
+			key = prefix + "." + k
+		}
+		switch typed := v.(type) {
+		case map[string]any:
+			nested, _ := json.Marshal(typed)
+			for nk, nv := range flattenJSON(nested, key) {
+				result[nk] = nv
+			}
+		default:
+			result[key] = v
+		}
+	}
+	return result
 }

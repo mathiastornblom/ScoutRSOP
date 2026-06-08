@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Server, GitCompare, History, Settings, ChevronDown,
+  Server, GitCompare, History, Settings, BookOpen, ChevronDown,
   Wifi, WifiOff, RefreshCw, ExternalLink, AlertCircle
 } from 'lucide-react'
 import { useAppStore } from '../store/app'
@@ -13,6 +13,7 @@ const NAV = [
   { to: '/',         icon: Server,     label: 'Servers'  },
   { to: '/rsop',     icon: GitCompare, label: 'RSOP'     },
   { to: '/history',  icon: History,    label: 'History'  },
+  { to: '/docs',     icon: BookOpen,   label: 'Docs'     },
   { to: '/settings', icon: Settings,   label: 'Settings' },
 ]
 
